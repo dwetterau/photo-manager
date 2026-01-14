@@ -7,25 +7,34 @@ interface PhotoCardProps {
 }
 
 export function PhotoCard({ photo }: PhotoCardProps) {
-  const { selectedIds, toggleSelection, selectPhoto, photos } = usePhotoStore();
+  const { selectedIds, toggleSelection, revealInFinder } = usePhotoStore();
   const isSelected = selectedIds.has(photo.id);
 
-  // Get the original file name if this is a duplicate
+  // Get the original file name from the path (avoid O(n) lookup through all photos)
   const duplicateOfName = photo.duplicateOf
-    ? photos.find((p) => p.id === photo.duplicateOf)?.name ||
-      photo.duplicateOf.split('/').pop()
+    ? photo.duplicateOf.split('/').pop()
     : null;
 
   const handleClick = (e: React.MouseEvent) => {
     if (e.metaKey || e.ctrlKey) {
+      // Cmd+click toggles selection
       toggleSelection(photo.id);
     } else {
-      selectPhoto(photo.id);
+      // Regular click reveals in Finder
+      revealInFinder(photo.path);
     }
   };
 
+  // RAW extensions that browsers can't display
+  const RAW_EXTENSIONS = ['arw', 'cr2', 'cr3', 'nef', 'dng', 'raf', 'orf', 'rw2', 'pef'];
+  
+  // Check if the thumbnail itself is a RAW file (browsers can't display these)
+  const thumbnailExt = photo.thumbnailPath?.split('.').pop()?.toLowerCase() || '';
+  const isThumbnailRaw = RAW_EXTENSIONS.includes(thumbnailExt);
+  
   // Convert file path to asset URL for Tauri
-  const thumbnailSrc = photo.thumbnailPath
+  // Don't try to load RAW files directly - browsers can't display them
+  const thumbnailSrc = photo.thumbnailPath && !isThumbnailRaw
     ? convertFileSrc(photo.thumbnailPath)
     : null;
 
@@ -57,6 +66,14 @@ export function PhotoCard({ photo }: PhotoCardProps) {
 
       {/* Badges */}
       <div className="absolute right-2 top-2 z-10 flex flex-col items-end gap-1">
+        {photo.isCloudPlaceholder && (
+          <span
+            className="rounded bg-sky-500/90 px-1.5 py-0.5 text-xs font-medium text-white shadow"
+            title="Cloud placeholder - not downloaded yet"
+          >
+            ☁️
+          </span>
+        )}
         {photo.isDuplicate && duplicateOfName && (
           <span
             className="max-w-[120px] truncate rounded bg-yellow-500/90 px-1.5 py-0.5 text-xs font-medium text-black shadow"

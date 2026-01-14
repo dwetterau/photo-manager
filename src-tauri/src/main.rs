@@ -4,8 +4,8 @@ mod hash_cache;
 mod scanner;
 
 use commands::{
-    create_folder, load_config, move_files, move_files_batch, rename_file, save_config,
-    scan_directories, trash_files,
+    create_folder, load_config, move_files, move_files_batch, rename_file, reveal_in_finder,
+    save_config, scan_directories, trash_files,
 };
 
 fn main() {
@@ -19,6 +19,7 @@ fn main() {
             trash_files,
             rename_file,
             create_folder,
+            reveal_in_finder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

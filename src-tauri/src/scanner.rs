@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use tauri::Window;
 use walkdir::WalkDir;
 
@@ -46,6 +47,8 @@ pub struct PhotoFile {
     pub related_files: Vec<RelatedFile>,
     pub is_duplicate: bool,
     pub duplicate_of: Option<String>,
+    /// True if file is a cloud placeholder (not fully downloaded)
+    pub is_cloud_placeholder: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -55,6 +58,15 @@ pub struct ScanProgress {
     pub current: usize,
     pub total: usize,
     pub message: String,
+}
+
+/// Compute percentage string
+fn pct(current: usize, total: usize) -> String {
+    if total == 0 {
+        "0%".to_string()
+    } else {
+        format!("{}%", (current * 100) / total)
+    }
 }
 
 /// Scan multiple directories for photos with progress reporting
@@ -129,10 +141,14 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
     
     let mut photos: Vec<PhotoFile> = Vec::new();
     let mut processed: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    // Track skipped files (not displayed but useful for debugging)
+    let mut _skipped: usize = 0;
+    let mut cache_size_hits: usize = 0;
+    let mut fs_reads: usize = 0;
 
-    // Sort files so RAW files come first - they take precedence over JPEGs
-    let mut sorted_files = all_files.clone();
-    sorted_files.sort_by(|a, b| {
+    // Sort files in place - no need to clone, we consume all_files here
+    // RAW files come first - they take precedence over JPEGs
+    all_files.sort_by(|a, b| {
         let a_ext = a.extension().and_then(|e| e.to_str()).unwrap_or("");
         let b_ext = b.extension().and_then(|e| e.to_str()).unwrap_or("");
         let a_is_raw = RAW_EXTENSIONS.contains(&a_ext.to_lowercase().as_str());
@@ -141,17 +157,21 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
         b_is_raw.cmp(&a_is_raw)
     });
 
-    for (idx, file_path) in sorted_files.iter().enumerate() {
-        if idx % 100 == 0 {
+    let total_files = all_files.len();
+    for (idx, file_path) in all_files.iter().enumerate() {
+        // Update progress every 25 files for smoother updates
+        if idx % 25 == 0 {
             emit_progress(
                 "analyzing",
                 idx,
-                sorted_files.len(),
-                &format!("Processing file {} of {}", idx, sorted_files.len()),
+                total_files,
+                &format!("[{}] {} photos ({} cached, {} read)", 
+                    pct(idx, total_files), photos.len(), cache_size_hits, fs_reads),
             );
         }
 
         if processed.contains(file_path) {
+            _skipped += 1;
             continue;
         }
 
@@ -163,6 +183,7 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
 
         // Skip sidecar files as primary
         if SIDECAR_EXTENSIONS.contains(&ext.as_str()) {
+            _skipped += 1;
             continue;
         }
 
@@ -171,6 +192,7 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
 
         // Check if this is a primary file
         if !is_raw && !is_image {
+            _skipped += 1;
             continue;
         }
 
@@ -195,6 +217,7 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
                 });
                 if has_raw_sibling {
                     // Skip this JPEG - it will be added as a related file to the RAW
+                    _skipped += 1;
                     continue;
                 }
             }
@@ -250,49 +273,84 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
             Some(file_path.to_string_lossy().to_string())
         };
 
-        // Get file metadata
-        if let Ok(metadata) = fs::metadata(file_path) {
-            let modified_at = metadata
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+        let path_str = file_path.to_string_lossy().to_string();
+        let directory = parent
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
 
-            let directory = parent
+        // Try to get size from cache first (avoids hydrating cloud files)
+        let cached_info = cache.as_ref().and_then(|c| c.get(&path_str));
+        
+        let (size, modified_at, cloud_placeholder) = if let Some(info) = cached_info {
+            // Use cached size - no filesystem access needed!
+            // We don't need modified_at for immutable files, use 0
+            cache_size_hits += 1;
+            (info.size, 0i64, false)
+        } else {
+            // Not in cache - need to get metadata from filesystem
+            // This may hydrate cloud files, but only on first scan
+            fs_reads += 1;
+            if let Ok(metadata) = fs::metadata(file_path) {
+                let mod_time = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let is_placeholder = is_cloud_placeholder(&path_str);
+                let file_size = metadata.len();
+                
+                // Cache the size for next time
+                if let Some(c) = cache.as_ref() {
+                    c.set_size(&path_str, file_size);
+                }
+                
+                (file_size, mod_time, is_placeholder)
+            } else {
+                // Can't read metadata, skip this file
+                _skipped += 1;
+                continue;
+            }
+        };
+
+        photos.push(PhotoFile {
+            id: path_str.clone(),  // Note: id equals path, kept for frontend compatibility
+            path: path_str,
+            name: file_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
-                .to_string();
-
-            photos.push(PhotoFile {
-                id: file_path.to_string_lossy().to_string(),
-                path: file_path.to_string_lossy().to_string(),
-                name: file_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string(),
-                directory,
-                extension: ext,
-                size: metadata.len(),
-                modified_at,
-                hash: None,
-                thumbnail_path,
-                related_files,
-                is_duplicate: false,
-                duplicate_of: None,
-            });
-        }
+                .to_string(),
+            directory,
+            extension: ext,
+            size,
+            modified_at,
+            hash: None,
+            thumbnail_path,
+            related_files,
+            is_duplicate: false,
+            duplicate_of: None,
+            is_cloud_placeholder: cloud_placeholder,
+        });
     }
 
+    // Final progress update for analyzing phase
     let photo_count = photos.len();
     emit_progress(
         "analyzing",
-        photo_count,
-        photo_count,
-        &format!("Found {} photos", photo_count),
+        total_files,
+        total_files,
+        &format!("[100%] {} photos ({} cached, {} read from disk)", 
+            photo_count, cache_size_hits, fs_reads),
     );
+
+    // Free memory from data structures no longer needed
+    // These can be large (100k+ entries) and we don't need them for duplicate detection
+    drop(all_files);
+    drop(file_groups);
+    drop(processed);
 
     // Phase 4: Find potential duplicates by file size (fast)
     emit_progress("duplicates", 0, photo_count, "Finding potential duplicates by file size...");
@@ -331,33 +389,52 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
 
     let mut trailing_hashes: HashMap<usize, String> = HashMap::new();
     let mut progress_idx = 0;
+    let mut cache_hits = 0;
+    let mut computed = 0;
 
     for group in &size_collision_groups {
         for &photo_idx in group {
-            if progress_idx % 20 == 0 {
+            // Update progress every 10 files for smooth feedback
+            if progress_idx % 10 == 0 {
                 emit_progress(
                     "trailing_hash",
                     progress_idx,
                     potential_count,
-                    &format!("Trailing hash {} of {}", progress_idx + 1, potential_count),
+                    &format!("[{}] Quick hash: {} cached, {} computed", 
+                        pct(progress_idx, potential_count), cache_hits, computed),
                 );
             }
 
-            let photo = &photos[photo_idx];
+            let photo = &mut photos[photo_idx];
             
-            // Check cache first for trailing hash
+            // Check cache first for trailing hash (path-only lookup, files are immutable)
             let cached_trailing: Option<String> = cache.as_ref()
-                .and_then(|c| c.get(&photo.path, photo.size, photo.modified_at))
-                .and_then(|(t, _)| t);
+                .and_then(|c| c.get(&photo.path))
+                .and_then(|info| info.trailing_hash);
 
-            let trailing_hash: String = cached_trailing.unwrap_or_else(|| {
+            let trailing_hash: String = if let Some(cached) = cached_trailing {
+                cache_hits += 1;
+                cached
+            } else {
+                computed += 1;
+                
+                // Need to read the file for hashing - may hydrate cloud placeholder
+                // First get the actual size if we don't have it
+                if photo.is_cloud_placeholder {
+                    if let Ok(metadata) = fs::metadata(&photo.path) {
+                        photo.size = metadata.len();
+                        photo.is_cloud_placeholder = false;
+                    }
+                }
+                
                 let hash = compute_trailing_hash(&photo.path, photo.size);
-                // Cache it
+                
+                // Cache the result (path-only key since files are immutable)
                 if let (Some(c), Some(h)) = (cache.as_ref(), hash.as_ref()) {
-                    c.set_trailing_hash(&photo.path, photo.size, photo.modified_at, h);
+                    c.set_trailing_hash(&photo.path, photo.size, h);
                 }
                 hash.unwrap_or_default()
-            });
+            };
 
             if !trailing_hash.is_empty() {
                 trailing_hashes.insert(photo_idx, trailing_hash);
@@ -365,6 +442,14 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
             progress_idx += 1;
         }
     }
+    
+    // Final trailing hash progress
+    emit_progress(
+        "trailing_hash",
+        potential_count,
+        potential_count,
+        &format!("[100%] Quick hash complete: {} cached, {} computed", cache_hits, computed),
+    );
 
     // Phase 6: Group by trailing hash to find likely duplicates
     emit_progress("duplicates", 0, photo_count, "Grouping by trailing hash...");
@@ -390,6 +475,11 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
         .copied()
         .collect();
 
+    // Free intermediate data structures - they can be large
+    drop(trailing_hash_groups);
+    drop(trailing_hashes);
+    drop(size_collision_groups);
+
     if needs_full_hash.is_empty() {
         emit_progress(
             "complete",
@@ -401,11 +491,15 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
     }
 
     // Phase 7: Compute full hash only for files with matching trailing hashes
+    let full_hash_total = needs_full_hash.len();
+    let mut full_cache_hits = 0;
+    let mut full_computed = 0;
+    
     emit_progress(
         "hashing",
         0,
-        needs_full_hash.len(),
-        &format!("Full hashing {} likely duplicates...", needs_full_hash.len()),
+        full_hash_total,
+        &format!("[0%] Full hashing {} likely duplicates...", full_hash_total),
     );
 
     for (progress_idx, &photo_idx) in needs_full_hash.iter().enumerate() {
@@ -413,29 +507,51 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
             emit_progress(
                 "hashing",
                 progress_idx,
-                needs_full_hash.len(),
-                &format!("Full hash {} of {}", progress_idx + 1, needs_full_hash.len()),
+                full_hash_total,
+                &format!("[{}] Full hash: {} cached, {} computed", 
+                    pct(progress_idx, full_hash_total), full_cache_hits, full_computed),
             );
         }
 
-        let photo = &photos[photo_idx];
+        let photo = &mut photos[photo_idx];
 
-        // Check cache first for full hash
+        // Check cache first for full hash (path-only lookup, files are immutable)
         let cached_full: Option<String> = cache.as_ref()
-            .and_then(|c| c.get(&photo.path, photo.size, photo.modified_at))
-            .and_then(|(_, f)| f);
+            .and_then(|c| c.get(&photo.path))
+            .and_then(|info| info.full_hash);
 
-        let full_hash: Option<String> = cached_full.or_else(|| {
+        let full_hash: Option<String> = if let Some(cached) = cached_full {
+            full_cache_hits += 1;
+            Some(cached)
+        } else {
+            full_computed += 1;
+            
+            // Need to read the file - may hydrate cloud placeholder
+            if photo.is_cloud_placeholder {
+                if let Ok(metadata) = fs::metadata(&photo.path) {
+                    photo.size = metadata.len();
+                    photo.is_cloud_placeholder = false;
+                }
+            }
+            
             let hash = compute_full_hash(&photo.path);
-            // Cache it
+            
+            // Cache the result (path-only key since files are immutable)
             if let (Some(c), Some(h)) = (cache.as_ref(), hash.as_ref()) {
-                c.set_full_hash(&photo.path, photo.size, photo.modified_at, h);
+                c.set_full_hash(&photo.path, photo.size, h);
             }
             hash
-        });
+        };
 
-        photos[photo_idx].hash = full_hash;
+        photo.hash = full_hash;
     }
+    
+    emit_progress(
+        "hashing",
+        full_hash_total,
+        full_hash_total,
+        &format!("[100%] Full hash complete: {} cached, {} computed", full_cache_hits, full_computed),
+    );
 
     // Phase 8: Use full hashes to identify confirmed duplicates
     emit_progress("duplicates", 0, photo_count, "Confirming duplicates by full content hash...");
@@ -508,4 +624,70 @@ fn compute_full_hash(path: &str) -> Option<String> {
     }
 
     Some(format!("{:x}", hasher.finalize()))
+}
+
+/// Check if a file is a cloud placeholder (dehydrated) on macOS
+/// Uses xattr to check for file provider attributes that indicate the file
+/// is not fully materialized locally (e.g., iCloud, Dropbox, OneDrive)
+fn is_cloud_placeholder(path: &str) -> bool {
+    // Check for common file provider extended attributes
+    // com.apple.fileprovider.* attributes indicate file provider managed files
+    // The presence of certain attributes or flags indicates dehydrated state
+    
+    let output = Command::new("xattr")
+        .arg("-l")
+        .arg(path)
+        .output();
+    
+    if let Ok(output) = output {
+        let attrs = String::from_utf8_lossy(&output.stdout);
+        
+        // Check for file provider attributes that indicate placeholder/dehydrated state
+        // Different providers use different attributes:
+        // - iCloud: com.apple.fileprovider.* with dataless flag
+        // - Dropbox: com.dropbox.* attributes
+        // - OneDrive: com.microsoft.OneDrive.*
+        
+        if attrs.contains("com.apple.fileprovider") {
+            // For file provider files, check if it's dataless/placeholder
+            // The "dataless" or "offline" state means content isn't local
+            return attrs.contains("dataless") || attrs.contains("offline");
+        }
+        
+        // Dropbox placeholder check - these have special attrs when not synced
+        if attrs.contains("com.dropbox.attrs") {
+            // Check for Dropbox "online-only" state via brctl
+            if let Ok(brctl_output) = Command::new("brctl")
+                .arg("dump")
+                .arg("-i")
+                .arg(path)
+                .output() 
+            {
+                let dump = String::from_utf8_lossy(&brctl_output.stdout);
+                if dump.contains("dataless") || dump.contains("evicted") {
+                    return true;
+                }
+            }
+        }
+    }
+    
+    // Alternative: check file flags using stat
+    // On APFS, placeholder files often have special flags
+    if let Ok(output) = Command::new("stat")
+        .arg("-f")
+        .arg("%f")
+        .arg(path)
+        .output()
+    {
+        let flags = String::from_utf8_lossy(&output.stdout);
+        if let Ok(flag_val) = flags.trim().parse::<u32>() {
+            // UF_DATALESS = 0x00000040 (file is a placeholder)
+            const UF_DATALESS: u32 = 0x00000040;
+            if flag_val & UF_DATALESS != 0 {
+                return true;
+            }
+        }
+    }
+    
+    false
 }

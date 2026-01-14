@@ -3,6 +3,7 @@ use crate::scanner::{scan_directories_with_progress, PhotoFile};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 use tauri::Window;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -133,6 +134,17 @@ pub async fn rename_file(path: String, new_name: String) -> Result<String, Strin
 #[tauri::command]
 pub async fn create_folder(path: String) -> Result<(), String> {
     fs::create_dir_all(&path).map_err(|e| e.to_string())
+}
+
+/// Reveal a file in Finder (macOS)
+#[tauri::command]
+pub async fn reveal_in_finder(path: String) -> Result<(), String> {
+    Command::new("open")
+        .arg("-R")  // Reveal in Finder
+        .arg(&path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Find a unique name for a file by appending a number

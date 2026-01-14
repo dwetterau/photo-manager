@@ -17,6 +17,8 @@ export interface PhotoFile {
   // Duplicate info
   isDuplicate: boolean;
   duplicateOf?: string;
+  // Cloud storage status
+  isCloudPlaceholder: boolean;
 }
 
 export interface RelatedFile {
@@ -34,6 +36,7 @@ export interface DirectoryConfig {
 export type ViewMode = 'grid' | 'list';
 export type SortField = 'name' | 'date' | 'size' | 'path';
 export type SortOrder = 'asc' | 'desc';
+export type FilterMode = 'duplicates' | 'all';
 
 interface UndoOperation {
   type: 'move';
@@ -53,6 +56,7 @@ interface PhotoState {
   viewMode: ViewMode;
   sortField: SortField;
   sortOrder: SortOrder;
+  filterMode: FilterMode;
 
   // Directory management
   directories: DirectoryConfig[];
@@ -73,6 +77,7 @@ interface PhotoState {
   setSortField: (field: SortField) => void;
   setSortOrder: (order: SortOrder) => void;
   toggleSortOrder: () => void;
+  setFilterMode: (mode: FilterMode) => void;
 
   addDirectory: (path: string) => Promise<void>;
   removeDirectory: (path: string) => void;
@@ -93,6 +98,7 @@ interface PhotoState {
   deletePhotos: (ids: string[]) => Promise<void>;
   renamePhoto: (id: string, newName: string) => Promise<void>;
   createFolder: (path: string) => Promise<void>;
+  revealInFinder: (path: string) => Promise<void>;
 
   undo: () => Promise<void>;
 }
@@ -116,6 +122,7 @@ export const usePhotoStore = create<PhotoState>((set, get) => ({
   viewMode: 'grid',
   sortField: 'date',
   sortOrder: 'desc',
+  filterMode: 'duplicates', // Default to showing only duplicates
   directories: [],
   photos: [],
   loading: false,
@@ -131,6 +138,7 @@ export const usePhotoStore = create<PhotoState>((set, get) => ({
     set((state) => ({
       sortOrder: state.sortOrder === 'asc' ? 'desc' : 'asc',
     })),
+  setFilterMode: (mode) => set({ filterMode: mode }),
 
   setScanProgress: (progress) => set({ scanProgress: progress }),
 
@@ -185,6 +193,38 @@ export const usePhotoStore = create<PhotoState>((set, get) => ({
       const photos = await invoke<PhotoFile[]>('scan_directories', {
         directories: enabledDirs,
       });
+      
+      // Count duplicates with a single pass (no intermediate array)
+      let duplicateCount = 0;
+      for (let i = 0; i < photos.length; i++) {
+        if (photos[i].isDuplicate) duplicateCount++;
+      }
+      
+      // Show preparing phase while processing data for UI
+      set({
+        scanProgress: {
+          phase: 'preparing',
+          current: 0,
+          total: photos.length,
+          message: `Received ${photos.length} photos, ${duplicateCount} duplicates...`,
+        },
+      });
+      
+      // Use requestAnimationFrame to allow the status update to render
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      
+      // Update status
+      set({
+        scanProgress: {
+          phase: 'rendering',
+          current: photos.length,
+          total: photos.length,
+          message: `Rendering ${duplicateCount} duplicates...`,
+        },
+      });
+      
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      
       set({ photos, loading: false, scanProgress: null });
     } catch (error) {
       console.error('Failed to scan directories:', error);
@@ -200,6 +240,7 @@ export const usePhotoStore = create<PhotoState>((set, get) => ({
         viewMode: ViewMode;
         sortField: SortField;
         sortOrder: SortOrder;
+        filterMode?: FilterMode;
       }>('load_config');
 
       set({
@@ -207,6 +248,7 @@ export const usePhotoStore = create<PhotoState>((set, get) => ({
         viewMode: config.viewMode || 'grid',
         sortField: config.sortField || 'date',
         sortOrder: config.sortOrder || 'desc',
+        filterMode: config.filterMode || 'duplicates',
       });
 
       // Don't auto-scan on load - let user click Scan button
@@ -216,10 +258,10 @@ export const usePhotoStore = create<PhotoState>((set, get) => ({
   },
 
   saveConfig: async () => {
-    const { directories, viewMode, sortField, sortOrder } = get();
+    const { directories, viewMode, sortField, sortOrder, filterMode } = get();
     try {
       await invoke('save_config', {
-        config: { directories, viewMode, sortField, sortOrder },
+        config: { directories, viewMode, sortField, sortOrder, filterMode },
       });
     } catch (error) {
       console.error('Failed to save config:', error);
@@ -319,6 +361,14 @@ export const usePhotoStore = create<PhotoState>((set, get) => ({
       await get().scanDirectories();
     } catch (error) {
       console.error('Failed to create folder:', error);
+    }
+  },
+
+  revealInFinder: async (path) => {
+    try {
+      await invoke('reveal_in_finder', { path });
+    } catch (error) {
+      console.error('Failed to reveal in Finder:', error);
     }
   },
 

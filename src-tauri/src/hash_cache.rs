@@ -1,7 +1,15 @@
 use rusqlite::{Connection, params};
 use std::path::PathBuf;
 
-/// Cache for file hashes stored in SQLite
+/// Cached file info - size and hashes
+pub struct CachedFileInfo {
+    pub size: u64,
+    pub trailing_hash: Option<String>,
+    pub full_hash: Option<String>,
+}
+
+/// Cache for file metadata and hashes stored in SQLite
+/// Uses path as the only key since files are immutable
 pub struct HashCache {
     conn: Connection,
 }
@@ -19,11 +27,11 @@ impl HashCache {
         let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
         
         // Create tables if they don't exist
+        // Note: We key by path only since files are immutable
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS file_hashes (
                 path TEXT PRIMARY KEY,
                 size INTEGER NOT NULL,
-                modified_at INTEGER NOT NULL,
                 trailing_hash TEXT,
                 full_hash TEXT
             );
@@ -43,54 +51,60 @@ impl HashCache {
             .join("hash_cache.db")
     }
 
-    /// Get cached hashes for a file if they exist and are still valid
-    /// Returns (trailing_hash, full_hash) if cache hit, None if miss or stale
-    pub fn get(&self, path: &str, size: u64, modified_at: i64) -> Option<(Option<String>, Option<String>)> {
-        let result = self.conn.query_row(
-            "SELECT trailing_hash, full_hash FROM file_hashes 
-             WHERE path = ?1 AND size = ?2 AND modified_at = ?3",
-            params![path, size as i64, modified_at],
+    /// Get cached info for a file by path only (files are immutable)
+    pub fn get(&self, path: &str) -> Option<CachedFileInfo> {
+        self.conn.query_row(
+            "SELECT size, trailing_hash, full_hash FROM file_hashes WHERE path = ?1",
+            params![path],
             |row| {
-                let trailing: Option<String> = row.get(0)?;
-                let full: Option<String> = row.get(1)?;
-                Ok((trailing, full))
+                Ok(CachedFileInfo {
+                    size: row.get::<_, i64>(0)? as u64,
+                    trailing_hash: row.get(1)?,
+                    full_hash: row.get(2)?,
+                })
             }
+        ).ok()
+    }
+
+    /// Store size only (during analyze phase, no hashing yet)
+    pub fn set_size(&self, path: &str, size: u64) {
+        let _ = self.conn.execute(
+            "INSERT OR IGNORE INTO file_hashes (path, size) VALUES (?1, ?2)",
+            params![path, size as i64],
         );
-        result.ok()
     }
 
-    /// Update just the trailing hash
-    pub fn set_trailing_hash(&self, path: &str, size: u64, modified_at: i64, trailing_hash: &str) {
-        // Try update first
-        let updated = self.conn.execute(
-            "UPDATE file_hashes SET trailing_hash = ?1 WHERE path = ?2",
-            params![trailing_hash, path],
-        ).unwrap_or(0);
+    /// Store trailing hash, also stores/updates size
+    pub fn set_trailing_hash(&self, path: &str, size: u64, trailing_hash: &str) {
+        // First try to get existing full_hash if any
+        let existing_full: Option<String> = self.conn.query_row(
+            "SELECT full_hash FROM file_hashes WHERE path = ?1",
+            params![path],
+            |row| row.get(0)
+        ).ok().flatten();
 
-        // If no row existed, insert
-        if updated == 0 {
-            let _ = self.conn.execute(
-                "INSERT INTO file_hashes (path, size, modified_at, trailing_hash) VALUES (?1, ?2, ?3, ?4)",
-                params![path, size as i64, modified_at, trailing_hash],
-            );
-        }
+        // Insert or replace with all current values
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO file_hashes (path, size, trailing_hash, full_hash) 
+             VALUES (?1, ?2, ?3, ?4)",
+            params![path, size as i64, trailing_hash, existing_full],
+        );
     }
 
-    /// Update just the full hash
-    pub fn set_full_hash(&self, path: &str, size: u64, modified_at: i64, full_hash: &str) {
-        // Try update first
-        let updated = self.conn.execute(
-            "UPDATE file_hashes SET full_hash = ?1 WHERE path = ?2",
-            params![full_hash, path],
-        ).unwrap_or(0);
+    /// Store full hash, also stores/updates size
+    pub fn set_full_hash(&self, path: &str, size: u64, full_hash: &str) {
+        // First try to get existing trailing_hash if any
+        let existing_trailing: Option<String> = self.conn.query_row(
+            "SELECT trailing_hash FROM file_hashes WHERE path = ?1",
+            params![path],
+            |row| row.get(0)
+        ).ok().flatten();
 
-        // If no row existed, insert
-        if updated == 0 {
-            let _ = self.conn.execute(
-                "INSERT INTO file_hashes (path, size, modified_at, full_hash) VALUES (?1, ?2, ?3, ?4)",
-                params![path, size as i64, modified_at, full_hash],
-            );
-        }
+        // Insert or replace with all current values
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO file_hashes (path, size, trailing_hash, full_hash) 
+             VALUES (?1, ?2, ?3, ?4)",
+            params![path, size as i64, existing_trailing, full_hash],
+        );
     }
 }
-

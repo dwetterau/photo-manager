@@ -23,8 +23,8 @@ function App() {
         {/* Toolbar */}
         <Toolbar />
 
-        {/* Photo display area - virtualized components handle their own scrolling */}
-        <main className="flex-1 overflow-hidden p-4">
+        {/* Photo display area */}
+        <main className="flex-1 overflow-auto p-4">
           {viewMode === 'grid' ? <PhotoGrid /> : <PhotoList />}
         </main>
 

@@ -9,6 +9,8 @@ export function Toolbar() {
     setSortField,
     sortOrder,
     toggleSortOrder,
+    filterMode,
+    setFilterMode,
     selectedIds,
     deselectAll,
     deletePhotos,
@@ -16,7 +18,10 @@ export function Toolbar() {
     undoStack,
     scanDirectories,
     loading,
+    photos,
   } = usePhotoStore();
+
+  const duplicateCount = photos.filter((p) => p.isDuplicate).length;
 
   const hasSelection = selectedIds.size > 0;
   const canUndo = undoStack.length > 0;
@@ -80,6 +85,65 @@ export function Toolbar() {
             />
           </svg>
           List
+        </button>
+      </div>
+
+      {/* Filter toggle */}
+      <div className="flex rounded-md border border-surface-700 bg-surface-800">
+        <button
+          onClick={() => setFilterMode('duplicates')}
+          className={clsx(
+            'flex items-center gap-1.5 rounded-l-md px-3 py-1.5 text-sm transition-colors',
+            filterMode === 'duplicates'
+              ? 'bg-yellow-600 text-white'
+              : 'text-surface-400 hover:text-surface-200'
+          )}
+          title="Show only duplicates"
+        >
+          <svg
+            className="h-4 w-4"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+            />
+          </svg>
+          Duplicates
+          {duplicateCount > 0 && (
+            <span className="rounded bg-yellow-700/50 px-1.5 py-0.5 text-xs">
+              {duplicateCount}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => setFilterMode('all')}
+          className={clsx(
+            'flex items-center gap-1.5 rounded-r-md px-3 py-1.5 text-sm transition-colors',
+            filterMode === 'all'
+              ? 'bg-accent text-white'
+              : 'text-surface-400 hover:text-surface-200'
+          )}
+          title="Show all photos"
+        >
+          <svg
+            className="h-4 w-4"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"
+            />
+          </svg>
+          All
         </button>
       </div>
 
