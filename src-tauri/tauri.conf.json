@@ -1,0 +1,77 @@
+{
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devPath": "http://localhost:1420",
+    "distDir": "../dist"
+  },
+  "package": {
+    "productName": "Photo Manager",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": {
+        "all": false,
+        "open": true
+      },
+      "fs": {
+        "all": true,
+        "scope": ["**"]
+      },
+      "path": {
+        "all": true
+      },
+      "shell": {
+        "open": true
+      },
+      "protocol": {
+        "asset": true,
+        "assetScope": ["**"]
+      }
+    },
+    "bundle": {
+      "active": true,
+      "category": "Photography",
+      "copyright": "",
+      "externalBin": [],
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png"
+      ],
+      "identifier": "com.photo-manager.app",
+      "longDescription": "A local-only photo management application for organizing your photo library across multiple directories.",
+      "macOS": {
+        "entitlements": null,
+        "exceptionDomain": "",
+        "frameworks": [],
+        "providerShortName": null,
+        "signingIdentity": null,
+        "minimumSystemVersion": "10.15"
+      },
+      "resources": [],
+      "shortDescription": "Photo Manager",
+      "targets": ["dmg", "app"]
+    },
+    "security": {
+      "csp": null
+    },
+    "updater": {
+      "active": false
+    },
+    "windows": [
+      {
+        "fullscreen": false,
+        "height": 800,
+        "resizable": true,
+        "title": "Photo Manager",
+        "width": 1200,
+        "minWidth": 800,
+        "minHeight": 600
+      }
+    ]
+  }
+}
+
