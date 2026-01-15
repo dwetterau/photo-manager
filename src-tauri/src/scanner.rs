@@ -1,4 +1,5 @@
 use crate::hash_cache::HashCache;
+use rayon::prelude::*;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -6,6 +7,8 @@ use std::fs::{self, File};
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tauri::Window;
 use walkdir::WalkDir;
 
@@ -388,6 +391,7 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
     }
 
     // Phase 5: Compute trailing hash for potential duplicates (fast - only last 1MB)
+    // This phase uses parallel processing for significant speedup
     emit_progress(
         "trailing_hash",
         0,
@@ -395,59 +399,114 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
         &format!("Computing trailing hashes for {} candidates...", potential_count),
     );
 
-    let mut trailing_hashes: HashMap<usize, String> = HashMap::new();
-    let mut progress_idx = 0;
-    let mut cache_hits = 0;
-    let mut computed = 0;
+    // Flatten all photo indices that need trailing hash
+    let indices_needing_hash: Vec<usize> = size_collision_groups
+        .iter()
+        .flatten()
+        .copied()
+        .collect();
 
-    for group in &size_collision_groups {
-        for &photo_idx in group {
-            // Update progress every 10 files for smooth feedback
-            if progress_idx % 10 == 0 {
-                emit_progress(
-                    "trailing_hash",
-                    progress_idx,
-                    potential_count,
-                    &format!("[{}] Quick hash: {} cached, {} computed", 
-                        pct(progress_idx, potential_count), cache_hits, computed),
-                );
+    // Pre-fetch cached trailing hashes (sequential, to avoid thread-safety issues)
+    let mut cached_trailing_hashes: HashMap<usize, String> = HashMap::new();
+    let mut needs_compute: Vec<usize> = Vec::new();
+    
+    for &photo_idx in &indices_needing_hash {
+        let photo = &photos[photo_idx];
+        if let Some(cached) = cache.as_ref()
+            .and_then(|c| c.get(&photo.path))
+            .and_then(|info| info.trailing_hash) 
+        {
+            cached_trailing_hashes.insert(photo_idx, cached);
+        } else {
+            needs_compute.push(photo_idx);
+        }
+    }
+    
+    let cache_hits = cached_trailing_hashes.len();
+    let to_compute = needs_compute.len();
+    
+    // Atomic counter for progress reporting during parallel computation
+    let progress_counter = Arc::new(AtomicUsize::new(0));
+    let progress_counter_clone = Arc::clone(&progress_counter);
+    
+    // Spawn a thread to emit progress updates periodically
+    let window_clone = window.clone();
+    let progress_total = to_compute;
+    let progress_thread = std::thread::spawn(move || {
+        loop {
+            let current = progress_counter_clone.load(Ordering::Relaxed);
+            if current >= progress_total {
+                break;
             }
+            let _ = window_clone.emit(
+                "scan-progress",
+                ScanProgress {
+                    phase: "trailing_hash".to_string(),
+                    current: cache_hits + current,
+                    total: potential_count,
+                    message: format!("[{}] Quick hash: {} cached, {} computed",
+                        pct(cache_hits + current, potential_count), cache_hits, current),
+                },
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
 
-            let photo = &mut photos[photo_idx];
-            
-            // Check cache first for trailing hash (path-only lookup, files are immutable)
-            let cached_trailing: Option<String> = cache.as_ref()
-                .and_then(|c| c.get(&photo.path))
-                .and_then(|info| info.trailing_hash);
+    // Parallel computation of trailing hashes
+    // We need to collect photo data first since we can't mutate during parallel iteration
+    let photo_data: Vec<(usize, String, u64, bool)> = needs_compute
+        .iter()
+        .map(|&idx| {
+            let photo = &photos[idx];
+            (idx, photo.path.clone(), photo.size, photo.is_cloud_placeholder)
+        })
+        .collect();
 
-            let trailing_hash: String = if let Some(cached) = cached_trailing {
-                cache_hits += 1;
-                cached
+    let computed_hashes: Vec<(usize, Option<String>, Option<u64>)> = photo_data
+        .par_iter()
+        .map(|(idx, path, size, is_placeholder)| {
+            // Handle cloud placeholder - need actual size
+            let actual_size = if *is_placeholder {
+                fs::metadata(path).map(|m| m.len()).ok()
             } else {
-                computed += 1;
-                
-                // Need to read the file for hashing - may hydrate cloud placeholder
-                // First get the actual size if we don't have it
-                if photo.is_cloud_placeholder {
-                    if let Ok(metadata) = fs::metadata(&photo.path) {
-                        photo.size = metadata.len();
-                        photo.is_cloud_placeholder = false;
-                    }
-                }
-                
-                let hash = compute_trailing_hash(&photo.path, photo.size);
-                
-                // Cache the result (path-only key since files are immutable)
-                if let (Some(c), Some(h)) = (cache.as_ref(), hash.as_ref()) {
-                    c.set_trailing_hash(&photo.path, photo.size, h);
-                }
-                hash.unwrap_or_default()
+                None
             };
+            
+            let hash_size = actual_size.unwrap_or(*size);
+            let hash = compute_trailing_hash(path, hash_size);
+            
+            // Increment progress counter
+            progress_counter.fetch_add(1, Ordering::Relaxed);
+            
+            (*idx, hash, actual_size)
+        })
+        .collect();
 
-            if !trailing_hash.is_empty() {
-                trailing_hashes.insert(photo_idx, trailing_hash);
-            }
-            progress_idx += 1;
+    // Wait for progress thread to finish
+    let _ = progress_thread.join();
+
+    // Merge results: cached + computed
+    let mut trailing_hashes: HashMap<usize, String> = cached_trailing_hashes;
+    let mut cache_updates: Vec<(String, u64, String)> = Vec::new();
+    
+    for (photo_idx, hash, actual_size) in computed_hashes {
+        // Update photo if we resolved cloud placeholder size
+        if let Some(size) = actual_size {
+            photos[photo_idx].size = size;
+            photos[photo_idx].is_cloud_placeholder = false;
+        }
+        
+        if let Some(h) = hash {
+            let photo = &photos[photo_idx];
+            cache_updates.push((photo.path.clone(), photo.size, h.clone()));
+            trailing_hashes.insert(photo_idx, h);
+        }
+    }
+    
+    // Update cache sequentially (not thread-safe)
+    if let Some(c) = cache.as_ref() {
+        for (path, size, hash) in cache_updates {
+            c.set_trailing_hash(&path, size, &hash);
         }
     }
     
@@ -456,7 +515,7 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
         "trailing_hash",
         potential_count,
         potential_count,
-        &format!("[100%] Quick hash complete: {} cached, {} computed", cache_hits, computed),
+        &format!("[100%] Quick hash complete: {} cached, {} computed", cache_hits, to_compute),
     );
 
     // Phase 6: Group by trailing hash to find likely duplicates
@@ -499,9 +558,8 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
     }
 
     // Phase 7: Compute full hash only for files with matching trailing hashes
+    // This phase uses parallel processing for significant speedup
     let full_hash_total = needs_full_hash.len();
-    let mut full_cache_hits = 0;
-    let mut full_computed = 0;
     
     emit_progress(
         "hashing",
@@ -510,55 +568,118 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
         &format!("[0%] Full hashing {} likely duplicates...", full_hash_total),
     );
 
-    for (progress_idx, &photo_idx) in needs_full_hash.iter().enumerate() {
-        if progress_idx % 5 == 0 {
-            emit_progress(
-                "hashing",
-                progress_idx,
-                full_hash_total,
-                &format!("[{}] Full hash: {} cached, {} computed", 
-                    pct(progress_idx, full_hash_total), full_cache_hits, full_computed),
-            );
-        }
-
-        let photo = &mut photos[photo_idx];
-
-        // Check cache first for full hash (path-only lookup, files are immutable)
-        let cached_full: Option<String> = cache.as_ref()
+    // Pre-fetch cached full hashes (sequential)
+    let mut cached_full_hashes: HashMap<usize, String> = HashMap::new();
+    let mut needs_full_compute: Vec<usize> = Vec::new();
+    
+    for &photo_idx in &needs_full_hash {
+        let photo = &photos[photo_idx];
+        if let Some(cached) = cache.as_ref()
             .and_then(|c| c.get(&photo.path))
-            .and_then(|info| info.full_hash);
-
-        let full_hash: Option<String> = if let Some(cached) = cached_full {
-            full_cache_hits += 1;
-            Some(cached)
+            .and_then(|info| info.full_hash)
+        {
+            cached_full_hashes.insert(photo_idx, cached);
         } else {
-            full_computed += 1;
-            
-            // Need to read the file - may hydrate cloud placeholder
-            if photo.is_cloud_placeholder {
-                if let Ok(metadata) = fs::metadata(&photo.path) {
-                    photo.size = metadata.len();
-                    photo.is_cloud_placeholder = false;
-                }
+            needs_full_compute.push(photo_idx);
+        }
+    }
+    
+    let full_cache_hits = cached_full_hashes.len();
+    let full_to_compute = needs_full_compute.len();
+    
+    // Atomic counter for progress reporting during parallel computation
+    let full_progress_counter = Arc::new(AtomicUsize::new(0));
+    let full_progress_counter_clone = Arc::clone(&full_progress_counter);
+    
+    // Spawn a thread to emit progress updates periodically
+    let window_clone2 = window.clone();
+    let full_progress_total = full_to_compute;
+    let full_progress_thread = std::thread::spawn(move || {
+        loop {
+            let current = full_progress_counter_clone.load(Ordering::Relaxed);
+            if current >= full_progress_total {
+                break;
             }
-            
-            let hash = compute_full_hash(&photo.path);
-            
-            // Cache the result (path-only key since files are immutable)
-            if let (Some(c), Some(h)) = (cache.as_ref(), hash.as_ref()) {
-                c.set_full_hash(&photo.path, photo.size, h);
-            }
-            hash
-        };
+            let _ = window_clone2.emit(
+                "scan-progress",
+                ScanProgress {
+                    phase: "hashing".to_string(),
+                    current: full_cache_hits + current,
+                    total: full_hash_total,
+                    message: format!("[{}] Full hash: {} cached, {} computed",
+                        pct(full_cache_hits + current, full_hash_total), full_cache_hits, current),
+                },
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
 
-        photo.hash = full_hash;
+    // Collect photo data for parallel computation
+    let full_photo_data: Vec<(usize, String, u64, bool)> = needs_full_compute
+        .iter()
+        .map(|&idx| {
+            let photo = &photos[idx];
+            (idx, photo.path.clone(), photo.size, photo.is_cloud_placeholder)
+        })
+        .collect();
+
+    // Parallel computation of full hashes
+    let computed_full_hashes: Vec<(usize, Option<String>, Option<u64>)> = full_photo_data
+        .par_iter()
+        .map(|(idx, path, size, is_placeholder)| {
+            // Handle cloud placeholder - need actual size
+            let actual_size = if *is_placeholder {
+                fs::metadata(path).map(|m| m.len()).ok()
+            } else {
+                None
+            };
+            
+            let hash = compute_full_hash(path);
+            
+            // Increment progress counter
+            full_progress_counter.fetch_add(1, Ordering::Relaxed);
+            
+            (*idx, hash, actual_size.or(Some(*size)))
+        })
+        .collect();
+
+    // Wait for progress thread to finish
+    let _ = full_progress_thread.join();
+
+    // Apply cached hashes to photos
+    for (photo_idx, hash) in &cached_full_hashes {
+        photos[*photo_idx].hash = Some(hash.clone());
+    }
+
+    // Apply computed hashes to photos and collect cache updates
+    let mut full_cache_updates: Vec<(String, u64, String)> = Vec::new();
+    
+    for (photo_idx, hash, size) in computed_full_hashes {
+        // Update photo size if resolved
+        if let Some(s) = size {
+            photos[photo_idx].size = s;
+            photos[photo_idx].is_cloud_placeholder = false;
+        }
+        
+        if let Some(h) = hash {
+            let photo = &photos[photo_idx];
+            full_cache_updates.push((photo.path.clone(), photo.size, h.clone()));
+            photos[photo_idx].hash = Some(h);
+        }
+    }
+    
+    // Update cache sequentially (not thread-safe)
+    if let Some(c) = cache.as_ref() {
+        for (path, size, hash) in full_cache_updates {
+            c.set_full_hash(&path, size, &hash);
+        }
     }
     
     emit_progress(
         "hashing",
         full_hash_total,
         full_hash_total,
-        &format!("[100%] Full hash complete: {} cached, {} computed", full_cache_hits, full_computed),
+        &format!("[100%] Full hash complete: {} cached, {} computed", full_cache_hits, full_to_compute),
     );
 
     // Phase 8: Use full hashes to identify confirmed duplicates

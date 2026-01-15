@@ -20,6 +20,8 @@ pub struct AppConfig {
     pub sort_field: String,
     #[serde(default = "default_sort_order")]
     pub sort_order: String,
+    #[serde(default = "default_filter_mode")]
+    pub filter_mode: String,
 }
 
 fn default_view_mode() -> String {
@@ -32,6 +34,10 @@ fn default_sort_field() -> String {
 
 fn default_sort_order() -> String {
     "desc".to_string()
+}
+
+fn default_filter_mode() -> String {
+    "duplicates".to_string()
 }
 
 impl AppConfig {

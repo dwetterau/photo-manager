@@ -157,14 +157,28 @@ export const usePhotoStore = create<PhotoState>((set, get) => ({
   undoStack: [],
 
   // View actions
-  setViewMode: (mode) => set({ viewMode: mode }),
-  setSortField: (field) => set({ sortField: field }),
-  setSortOrder: (order) => set({ sortOrder: order }),
-  toggleSortOrder: () =>
+  setViewMode: (mode) => {
+    set({ viewMode: mode });
+    get().saveConfig();
+  },
+  setSortField: (field) => {
+    set({ sortField: field });
+    get().saveConfig();
+  },
+  setSortOrder: (order) => {
+    set({ sortOrder: order });
+    get().saveConfig();
+  },
+  toggleSortOrder: () => {
     set((state) => ({
       sortOrder: state.sortOrder === 'asc' ? 'desc' : 'asc',
-    })),
-  setFilterMode: (mode) => set({ filterMode: mode }),
+    }));
+    get().saveConfig();
+  },
+  setFilterMode: (mode) => {
+    set({ filterMode: mode });
+    get().saveConfig();
+  },
 
   setScanProgress: (progress) => set({ scanProgress: progress }),
   setDeleteProgress: (progress) => set({ deleteProgress: progress }),

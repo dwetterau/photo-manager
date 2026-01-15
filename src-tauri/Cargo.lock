@@ -2462,6 +2462,7 @@ dependencies = [
  "chrono",
  "dirs",
  "image 0.25.9",
+ "rayon",
  "rusqlite",
  "serde",
  "serde_json",
