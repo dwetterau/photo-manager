@@ -283,37 +283,45 @@ pub fn scan_directories_with_progress(directories: &[String], window: Window) ->
         // Try to get size from cache first (avoids hydrating cloud files)
         let cached_info = cache.as_ref().and_then(|c| c.get(&path_str));
         
-        let (size, modified_at, cloud_placeholder) = if let Some(info) = cached_info {
-            // Use cached size - no filesystem access needed!
-            // We don't need modified_at for immutable files, use 0
-            cache_size_hits += 1;
-            (info.size, 0i64, false)
-        } else {
-            // Not in cache - need to get metadata from filesystem
-            // This may hydrate cloud files, but only on first scan
-            fs_reads += 1;
-            if let Ok(metadata) = fs::metadata(file_path) {
-                let mod_time = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                let is_placeholder = is_cloud_placeholder(&path_str);
-                let file_size = metadata.len();
-                
-                // Cache the size for next time
-                if let Some(c) = cache.as_ref() {
-                    c.set_size(&path_str, file_size);
-                }
-                
-                (file_size, mod_time, is_placeholder)
-            } else {
-                // Can't read metadata, skip this file
+        // Always read metadata for modified_at - this doesn't hydrate cloud files
+        // (only reading file content does)
+        let metadata = match fs::metadata(file_path) {
+            Ok(m) => m,
+            Err(_) => {
                 _skipped += 1;
                 continue;
             }
         };
+        
+        // Use creation time (birthtime on macOS) - more reliable for photos
+        // Falls back to modified time if creation time is unavailable
+        let file_time = metadata
+            .created()
+            .or_else(|_| metadata.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        
+        let (size, cloud_placeholder) = if let Some(info) = cached_info {
+            // Use cached size - avoids reading file content for cloud files
+            cache_size_hits += 1;
+            (info.size, false)
+        } else {
+            // Not in cache - get size from metadata
+            fs_reads += 1;
+            let is_placeholder = is_cloud_placeholder(&path_str);
+            let file_size = metadata.len();
+            
+            // Cache the size for next time
+            if let Some(c) = cache.as_ref() {
+                c.set_size(&path_str, file_size);
+            }
+            
+            (file_size, is_placeholder)
+        };
+        
+        let modified_at = file_time;
 
         photos.push(PhotoFile {
             id: path_str.clone(),  // Note: id equals path, kept for frontend compatibility

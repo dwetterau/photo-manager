@@ -75,7 +75,7 @@ export function useSortedPhotos(): PhotoFile[] {
 
 // Hook to get photos grouped by duplicate relationship
 export function useDuplicateGroups(): DuplicateGroup[] {
-  const { photos, filterMode, loading } = usePhotoStore();
+  const { photos, filterMode, loading, sortField, sortOrder } = usePhotoStore();
 
   return useMemo(() => {
     // Don't compute while loading
@@ -89,36 +89,62 @@ export function useDuplicateGroups(): DuplicateGroup[] {
       photoById.set(photo.id, photo);
     }
 
-    // Build groups in a single pass
-    const groupMap = new Map<string, DuplicateGroup>();
+    // Build groups: collect all photos that share a content hash
+    const groupMap = new Map<string, PhotoFile[]>();
 
     for (const photo of photos) {
       if (photo.isDuplicate && photo.duplicateOf) {
-        let group = groupMap.get(photo.duplicateOf);
-        
-        if (!group) {
-          // O(1) lookup instead of O(n) .find()
-          const original = photoById.get(photo.duplicateOf);
-          if (original) {
-            group = {
-              originalId: photo.duplicateOf,
-              original,
-              duplicates: [],
-            };
-            groupMap.set(photo.duplicateOf, group);
+        // Get the original to find the content hash group
+        const original = photoById.get(photo.duplicateOf);
+        if (original) {
+          const groupKey = photo.duplicateOf;
+          let members = groupMap.get(groupKey);
+          if (!members) {
+            members = [original];
+            groupMap.set(groupKey, members);
           }
-        }
-        
-        if (group) {
-          group.duplicates.push(photo);
+          members.push(photo);
         }
       }
     }
 
-    // Convert to array and sort by original name
-    const groups = Array.from(groupMap.values());
-    groups.sort((a, b) => a.original.name.localeCompare(b.original.name));
+    // Convert to DuplicateGroup format, sorting by path length so shortest becomes the header
+    const groups: DuplicateGroup[] = [];
+    for (const members of groupMap.values()) {
+      // Sort by path length (shortest first)
+      members.sort((a, b) => a.path.length - b.path.length);
+      
+      const [header, ...rest] = members;
+      groups.push({
+        originalId: header.id,
+        original: header,
+        duplicates: rest,
+      });
+    }
+
+    // Sort groups based on sortField and sortOrder
+    groups.sort((a, b) => {
+      let comparison = 0;
+      
+      switch (sortField) {
+        case 'name':
+          comparison = a.original.name.localeCompare(b.original.name);
+          break;
+        case 'date':
+          comparison = a.original.modifiedAt - b.original.modifiedAt;
+          break;
+        case 'size':
+          comparison = a.original.size - b.original.size;
+          break;
+        case 'path':
+          comparison = a.original.path.localeCompare(b.original.path);
+          break;
+      }
+      
+      return sortOrder === 'asc' ? comparison : -comparison;
+    });
+    
     return groups;
-  }, [photos, filterMode, loading]);
+  }, [photos, filterMode, loading, sortField, sortOrder]);
 }
 

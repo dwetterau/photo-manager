@@ -1,22 +1,8 @@
 import { useState } from 'react';
 import { open } from '@tauri-apps/api/dialog';
 import { usePhotoStore } from '../store/photoStore';
+import { shortenPath } from '../utils/format';
 import clsx from 'clsx';
-
-// Path prefixes to shorten for display
-const PATH_SHORTCUTS: [string, string][] = [
-  ['/Users/davidw/Library/CloudStorage/Dropbox/', '/Dropbox/'],
-];
-
-// Shorten a path for display
-function shortenPath(path: string): string {
-  for (const [prefix, replacement] of PATH_SHORTCUTS) {
-    if (path.startsWith(prefix)) {
-      return replacement + path.slice(prefix.length);
-    }
-  }
-  return path;
-}
 
 export function Sidebar() {
   const {

@@ -2,26 +2,11 @@ import { useState, useCallback, useEffect } from 'react';
 import { usePhotoStore } from '../store/photoStore';
 import { PhotoCard } from './PhotoCard';
 import { useSortedPhotos, useDuplicateGroups } from '../hooks/useSortedPhotos';
-import { formatBytes } from '../utils/format';
+import { formatBytes, shortenPath } from '../utils/format';
 
 // Limit how many items we render at once to prevent memory issues
 const INITIAL_RENDER_LIMIT = 50;
 const LOAD_MORE_INCREMENT = 50;
-
-// Path prefixes to shorten for display
-const PATH_SHORTCUTS: [string, string][] = [
-  ['/Users/davidw/Library/CloudStorage/Dropbox/', '/Dropbox/'],
-];
-
-// Shorten a path for display
-function shortenPath(path: string): string {
-  for (const [prefix, replacement] of PATH_SHORTCUTS) {
-    if (path.startsWith(prefix)) {
-      return replacement + path.slice(prefix.length);
-    }
-  }
-  return path;
-}
 
 export function PhotoGrid() {
   const { loading, photos, filterMode, scanProgress, revealInFinder } = usePhotoStore();

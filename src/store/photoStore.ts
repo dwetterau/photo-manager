@@ -51,6 +51,21 @@ export interface ScanProgress {
   message: string;
 }
 
+export interface DeleteProgress {
+  phase: string;
+  current: number;
+  total: number;
+  deleted_bytes: number;
+  current_file: string;
+}
+
+export interface DeleteResult {
+  deleted_count: number;
+  failed_count: number;
+  total_bytes: number;
+  show_until?: number; // Timestamp when to hide the result
+}
+
 interface PhotoState {
   // View state
   viewMode: ViewMode;
@@ -65,6 +80,11 @@ interface PhotoState {
   photos: PhotoFile[];
   loading: boolean;
   scanProgress: ScanProgress | null;
+  
+  // Delete progress
+  deleteProgress: DeleteProgress | null;
+  deleteResult: DeleteResult | null;
+  isDeleting: boolean;
 
   // Selection
   selectedIds: Set<string>;
@@ -88,6 +108,9 @@ interface PhotoState {
   saveConfig: () => Promise<void>;
 
   setScanProgress: (progress: ScanProgress | null) => void;
+  setDeleteProgress: (progress: DeleteProgress | null) => void;
+  setDeleteResult: (result: DeleteResult | null) => void;
+  clearDeleteResult: () => void;
 
   selectPhoto: (id: string, multi?: boolean) => void;
   selectAll: () => void;
@@ -127,6 +150,9 @@ export const usePhotoStore = create<PhotoState>((set, get) => ({
   photos: [],
   loading: false,
   scanProgress: null,
+  deleteProgress: null,
+  deleteResult: null,
+  isDeleting: false,
   selectedIds: new Set(),
   undoStack: [],
 
@@ -141,6 +167,9 @@ export const usePhotoStore = create<PhotoState>((set, get) => ({
   setFilterMode: (mode) => set({ filterMode: mode }),
 
   setScanProgress: (progress) => set({ scanProgress: progress }),
+  setDeleteProgress: (progress) => set({ deleteProgress: progress }),
+  setDeleteResult: (result) => set({ deleteResult: result }),
+  clearDeleteResult: () => set({ deleteResult: null }),
 
   // Directory actions
   addDirectory: async (path) => {
@@ -326,17 +355,46 @@ export const usePhotoStore = create<PhotoState>((set, get) => ({
   },
 
   deletePhotos: async (ids) => {
-    const { photos } = get();
+    const { photos, setDeleteProgress, setDeleteResult } = get();
     const toDelete = photos.filter((p) => ids.includes(p.id));
 
+    if (toDelete.length === 0) return;
+
+    // Set up delete progress listener
+    let unlistenDelete: UnlistenFn | null = null;
     try {
-      await invoke('trash_files', {
+      unlistenDelete = await listen<DeleteProgress>('delete-progress', (event) => {
+        setDeleteProgress(event.payload);
+      });
+    } catch (e) {
+      console.error('Failed to set up delete progress listener:', e);
+    }
+
+    set({ isDeleting: true, deleteProgress: null, deleteResult: null });
+
+    try {
+      const result = await invoke<{ deleted_count: number; failed_count: number; total_bytes: number }>('trash_files', {
         files: toDelete.map((p) => p.path),
       });
-      set({ selectedIds: new Set() });
+      
+      set({ selectedIds: new Set(), isDeleting: false, deleteProgress: null });
+      
+      // Set result with auto-hide timer (show for 5 seconds)
+      setDeleteResult({
+        deleted_count: result.deleted_count,
+        failed_count: result.failed_count,
+        total_bytes: result.total_bytes,
+        show_until: Date.now() + 5000,
+      });
+      
       await get().scanDirectories();
     } catch (error) {
       console.error('Failed to delete files:', error);
+      set({ isDeleting: false, deleteProgress: null });
+    } finally {
+      if (unlistenDelete) {
+        unlistenDelete();
+      }
     }
   },
 

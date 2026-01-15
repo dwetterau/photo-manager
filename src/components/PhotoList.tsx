@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { usePhotoStore } from '../store/photoStore';
 import { useSortedPhotos, useDuplicateGroups } from '../hooks/useSortedPhotos';
-import { formatBytes, formatDate } from '../utils/format';
+import { formatBytes, formatDate, shortenPath } from '../utils/format';
 import { convertFileSrc } from '@tauri-apps/api/tauri';
 import clsx from 'clsx';
 
@@ -11,21 +11,6 @@ const LOAD_MORE_INCREMENT = 100;
 
 // RAW extensions that browsers can't display
 const RAW_EXTENSIONS = ['arw', 'cr2', 'cr3', 'nef', 'dng', 'raf', 'orf', 'rw2', 'pef'];
-
-// Path prefixes to shorten for display
-const PATH_SHORTCUTS: [string, string][] = [
-  ['/Users/davidw/Library/CloudStorage/Dropbox/', '/Dropbox/'],
-];
-
-// Shorten a path for display
-function shortenPath(path: string): string {
-  for (const [prefix, replacement] of PATH_SHORTCUTS) {
-    if (path.startsWith(prefix)) {
-      return replacement + path.slice(prefix.length);
-    }
-  }
-  return path;
-}
 
 export function PhotoList() {
   const { loading, photos, selectedIds, toggleSelection, filterMode, scanProgress, revealInFinder } =
@@ -44,15 +29,6 @@ export function PhotoList() {
   const loadMore = useCallback(() => {
     setVisibleCount((prev) => prev + LOAD_MORE_INCREMENT);
   }, []);
-
-  // Handle click: default = reveal in Finder, cmd+click = toggle selection
-  const handleRowClick = useCallback((e: React.MouseEvent, photoId: string, photoPath: string) => {
-    if (e.metaKey || e.ctrlKey) {
-      toggleSelection(photoId);
-    } else {
-      revealInFinder(photoPath);
-    }
-  }, [toggleSelection, revealInFinder]);
 
   // Check if a thumbnail path is a RAW file (can't be displayed in browser)
   const isRawThumbnail = (thumbnailPath: string | undefined): boolean => {
@@ -118,14 +94,33 @@ export function PhotoList() {
     return (
       <div className="overflow-x-auto p-4">
         <p className="mb-4 text-xs text-surface-500">
-          Click to reveal in Finder • ⌘+click to select for deletion
+          Click checkbox/thumbnail to select • Click path to reveal in Finder
         </p>
         
         {visibleGroups.map((group) => (
           <div key={group.originalId} className="mb-6 rounded-lg border border-surface-700 bg-surface-800/30">
             {/* Group header: Original file */}
-            <div className="border-b border-surface-700 bg-surface-800/50 px-4 py-3">
+            <div
+              className={clsx(
+                'border-b border-surface-700 bg-surface-800/50 py-3 pr-4 transition-colors',
+                selectedIds.has(group.original.id) && 'bg-accent/20'
+              )}
+            >
               <div className="flex items-center gap-3">
+                {/* Checkbox - click this area to select */}
+                <div
+                  className="flex h-12 cursor-pointer items-center px-3"
+                  onClick={() => toggleSelection(group.original.id)}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(group.original.id)}
+                    onChange={() => toggleSelection(group.original.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    className="h-4 w-4 rounded border-surface-600 bg-surface-800 text-accent focus:ring-accent"
+                  />
+                </div>
+
                 {/* Thumbnail */}
                 <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded bg-surface-800">
                   {group.original.thumbnailPath && !isRawThumbnail(group.original.thumbnailPath) ? (
@@ -144,15 +139,16 @@ export function PhotoList() {
                   )}
                 </div>
                 
-                {/* Original info */}
-                <div className="min-w-0 flex-1">
+                {/* Header info - click to reveal */}
+                <div
+                  className="min-w-0 flex-1 cursor-pointer"
+                  onClick={() => revealInFinder(group.original.path)}
+                >
                   <p className="font-medium text-surface-200">
-                    Original: {group.original.name}
+                    {group.original.name}
                   </p>
                   <p
-                    className="cursor-pointer truncate font-mono text-xs text-surface-400 hover:text-accent"
-                    title={group.original.path}
-                    onClick={(e) => handleRowClick(e, group.original.id, group.original.path)}
+                    className="break-all font-mono text-xs text-surface-400 hover:text-accent"
                   >
                     {shortenPath(group.original.path)}
                   </p>
@@ -168,19 +164,6 @@ export function PhotoList() {
 
             {/* Duplicate rows */}
             <table className="w-full text-left text-sm">
-              <thead className="bg-surface-900/50 text-xs uppercase text-surface-500">
-                <tr>
-                  <th className="w-8 px-3 py-2">
-                    <span className="sr-only">Select</span>
-                  </th>
-                  <th className="w-12 px-3 py-2">
-                    <span className="sr-only">Thumbnail</span>
-                  </th>
-                  <th className="px-3 py-2">Full Path</th>
-                  <th className="px-3 py-2">Size</th>
-                  <th className="px-3 py-2">Modified</th>
-                </tr>
-              </thead>
               <tbody className="divide-y divide-surface-800">
                 {group.duplicates.map((dup) => {
                   const isSelected = selectedIds.has(dup.id);
@@ -191,16 +174,18 @@ export function PhotoList() {
                   return (
                     <tr
                       key={dup.id}
-                      onClick={(e) => handleRowClick(e, dup.id, dup.path)}
                       className={clsx(
-                        'cursor-pointer transition-colors',
+                        'transition-colors',
                         isSelected
                           ? 'bg-accent/20 hover:bg-accent/30'
                           : 'hover:bg-surface-800/50'
                       )}
                     >
-                      {/* Checkbox */}
-                      <td className="px-3 py-2">
+                      {/* Checkbox - click to select */}
+                      <td
+                        className="cursor-pointer px-3 py-2"
+                        onClick={() => toggleSelection(dup.id)}
+                      >
                         <input
                           type="checkbox"
                           checked={isSelected}
@@ -210,8 +195,11 @@ export function PhotoList() {
                         />
                       </td>
 
-                      {/* Thumbnail */}
-                      <td className="px-3 py-2">
+                      {/* Thumbnail - click to select */}
+                      <td
+                        className="cursor-pointer px-3 py-2"
+                        onClick={() => toggleSelection(dup.id)}
+                      >
                         <div className="h-10 w-10 overflow-hidden rounded bg-surface-800">
                           {thumbnailSrc ? (
                             <img
@@ -230,11 +218,13 @@ export function PhotoList() {
                         </div>
                       </td>
 
-                      {/* Full Path */}
-                      <td className="px-3 py-2">
+                      {/* Full Path - click to reveal */}
+                      <td
+                        className="cursor-pointer px-3 py-2"
+                        onClick={() => revealInFinder(dup.path)}
+                      >
                         <span
-                          className="block truncate font-mono text-sm text-surface-300"
-                          title={dup.path}
+                          className="block break-all font-mono text-sm text-surface-300 hover:text-accent"
                         >
                           {dup.isCloudPlaceholder && (
                             <span className="mr-1.5 text-sky-400" title="Cloud placeholder">☁️</span>
@@ -243,13 +233,19 @@ export function PhotoList() {
                         </span>
                       </td>
 
-                      {/* Size */}
-                      <td className="px-3 py-2 tabular-nums text-surface-400">
+                      {/* Size - click to reveal */}
+                      <td
+                        className="cursor-pointer px-3 py-2 tabular-nums text-surface-400"
+                        onClick={() => revealInFinder(dup.path)}
+                      >
                         {formatBytes(dup.size)}
                       </td>
 
-                      {/* Modified */}
-                      <td className="px-3 py-2 text-surface-400">
+                      {/* Modified - click to reveal */}
+                      <td
+                        className="cursor-pointer px-3 py-2 text-surface-400"
+                        onClick={() => revealInFinder(dup.path)}
+                      >
                         {formatDate(dup.modifiedAt)}
                       </td>
                     </tr>
@@ -281,7 +277,7 @@ export function PhotoList() {
   return (
     <div className="overflow-x-auto">
       <p className="mb-2 px-3 text-xs text-surface-500">
-        Click to reveal in Finder • ⌘+click to select for deletion
+        Click checkbox/thumbnail to select • Click elsewhere to reveal in Finder
       </p>
       
       <table className="w-full min-w-[900px] text-left text-sm">
@@ -311,16 +307,18 @@ export function PhotoList() {
             return (
               <tr
                 key={photo.id}
-                onClick={(e) => handleRowClick(e, photo.id, photo.path)}
                 className={clsx(
-                  'cursor-pointer transition-colors',
+                  'transition-colors',
                   isSelected
                     ? 'bg-accent/20 hover:bg-accent/30'
                     : 'hover:bg-surface-800/50'
                 )}
               >
-                {/* Checkbox */}
-                <td className="px-3 py-2">
+                {/* Checkbox - click to select */}
+                <td
+                  className="cursor-pointer px-3 py-2"
+                  onClick={() => toggleSelection(photo.id)}
+                >
                   <input
                     type="checkbox"
                     checked={isSelected}
@@ -330,8 +328,11 @@ export function PhotoList() {
                   />
                 </td>
 
-                {/* Thumbnail */}
-                <td className="px-3 py-2">
+                {/* Thumbnail - click to select */}
+                <td
+                  className="cursor-pointer px-3 py-2"
+                  onClick={() => toggleSelection(photo.id)}
+                >
                   <div className="h-10 w-10 overflow-hidden rounded bg-surface-800">
                     {thumbnailSrc ? (
                       <img
@@ -350,9 +351,12 @@ export function PhotoList() {
                   </div>
                 </td>
 
-                {/* Name */}
-                <td className="px-3 py-2">
-                  <span className="flex items-center gap-1.5 font-medium text-surface-200">
+                {/* Name - click to reveal */}
+                <td
+                  className="cursor-pointer px-3 py-2"
+                  onClick={() => revealInFinder(photo.path)}
+                >
+                  <span className="flex items-center gap-1.5 font-medium text-surface-200 hover:text-accent">
                     {photo.isCloudPlaceholder && (
                       <span className="text-sky-400" title="Cloud placeholder">☁️</span>
                     )}
@@ -360,32 +364,47 @@ export function PhotoList() {
                   </span>
                 </td>
 
-                {/* Full Path */}
-                <td className="px-3 py-2">
-                  <span className="block max-w-[300px] truncate font-mono text-xs text-surface-400" title={photo.path}>
+                {/* Full Path - click to reveal */}
+                <td
+                  className="cursor-pointer px-3 py-2"
+                  onClick={() => revealInFinder(photo.path)}
+                >
+                  <span className="block max-w-[300px] truncate font-mono text-xs text-surface-400 hover:text-accent" title={photo.path}>
                     {shortenPath(photo.path)}
                   </span>
                 </td>
 
-                {/* Type */}
-                <td className="px-3 py-2">
+                {/* Type - click to reveal */}
+                <td
+                  className="cursor-pointer px-3 py-2"
+                  onClick={() => revealInFinder(photo.path)}
+                >
                   <span className="rounded bg-surface-800 px-1.5 py-0.5 font-mono text-xs uppercase text-surface-400">
                     {photo.extension}
                   </span>
                 </td>
 
-                {/* Size */}
-                <td className="px-3 py-2 tabular-nums text-surface-400">
+                {/* Size - click to reveal */}
+                <td
+                  className="cursor-pointer px-3 py-2 tabular-nums text-surface-400"
+                  onClick={() => revealInFinder(photo.path)}
+                >
                   {formatBytes(photo.size)}
                 </td>
 
-                {/* Modified */}
-                <td className="px-3 py-2 text-surface-400">
+                {/* Modified - click to reveal */}
+                <td
+                  className="cursor-pointer px-3 py-2 text-surface-400"
+                  onClick={() => revealInFinder(photo.path)}
+                >
                   {formatDate(photo.modifiedAt)}
                 </td>
 
-                {/* Related files */}
-                <td className="px-3 py-2">
+                {/* Related files - click to reveal */}
+                <td
+                  className="cursor-pointer px-3 py-2"
+                  onClick={() => revealInFinder(photo.path)}
+                >
                   {photo.relatedFiles.length > 0 ? (
                     <span
                       className="rounded bg-blue-500/20 px-1.5 py-0.5 text-xs text-blue-400"

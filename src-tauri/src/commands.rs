@@ -101,13 +101,78 @@ pub async fn move_files_batch(operations: Vec<MoveOperation>) -> Result<(), Stri
     Ok(())
 }
 
-/// Move files to system trash
+/// Delete progress event payload
+#[derive(Debug, Clone, Serialize)]
+pub struct DeleteProgress {
+    pub current: usize,
+    pub total: usize,
+    pub deleted_bytes: u64,
+    pub current_file: String,
+    pub phase: String,
+}
+
+/// Delete completion result
+#[derive(Debug, Clone, Serialize)]
+pub struct DeleteResult {
+    pub deleted_count: usize,
+    pub failed_count: usize,
+    pub total_bytes: u64,
+}
+
+/// Move files to system trash with progress reporting
 #[tauri::command]
-pub async fn trash_files(files: Vec<String>) -> Result<(), String> {
-    for file in files {
-        trash::delete(&file).map_err(|e| e.to_string())?;
+pub async fn trash_files(window: Window, files: Vec<String>) -> Result<DeleteResult, String> {
+    let total = files.len();
+    let mut deleted_count = 0;
+    let mut failed_count = 0;
+    let mut total_bytes: u64 = 0;
+
+    for (i, file) in files.iter().enumerate() {
+        let path = Path::new(&file);
+        
+        // Get file size before deletion
+        let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let file_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Emit progress event
+        let _ = window.emit("delete-progress", DeleteProgress {
+            current: i + 1,
+            total,
+            deleted_bytes: total_bytes,
+            current_file: file_name.clone(),
+            phase: "deleting".to_string(),
+        });
+
+        // Attempt deletion
+        match trash::delete(&file) {
+            Ok(_) => {
+                deleted_count += 1;
+                total_bytes += file_size;
+            }
+            Err(e) => {
+                eprintln!("Failed to delete {}: {}", file, e);
+                failed_count += 1;
+            }
+        }
     }
-    Ok(())
+
+    // Emit completion event
+    let _ = window.emit("delete-progress", DeleteProgress {
+        current: total,
+        total,
+        deleted_bytes: total_bytes,
+        current_file: String::new(),
+        phase: "complete".to_string(),
+    });
+
+    Ok(DeleteResult {
+        deleted_count,
+        failed_count,
+        total_bytes,
+    })
 }
 
 /// Rename a file

@@ -1,4 +1,6 @@
+import { useMemo } from 'react';
 import { usePhotoStore } from '../store/photoStore';
+import { formatBytes } from '../utils/format';
 import clsx from 'clsx';
 
 export function Toolbar() {
@@ -19,6 +21,7 @@ export function Toolbar() {
     scanDirectories,
     loading,
     photos,
+    isDeleting,
   } = usePhotoStore();
 
   const duplicateCount = photos.filter((p) => p.isDuplicate).length;
@@ -26,8 +29,25 @@ export function Toolbar() {
   const hasSelection = selectedIds.size > 0;
   const canUndo = undoStack.length > 0;
 
+  // Calculate total size of selected photos
+  const selectedTotalSize = useMemo(() => {
+    let total = 0;
+    for (const photo of photos) {
+      if (selectedIds.has(photo.id)) {
+        total += photo.size;
+      }
+    }
+    return total;
+  }, [photos, selectedIds]);
+
   const handleDelete = async () => {
-    if (hasSelection && confirm(`Delete ${selectedIds.size} photo(s)?`)) {
+    if (!hasSelection || isDeleting) return;
+    
+    const sizeStr = formatBytes(selectedTotalSize);
+    const count = selectedIds.size;
+    const message = `Move ${count} photo${count !== 1 ? 's' : ''} (${sizeStr}) to Trash?\n\nThis will free up ${sizeStr} of storage.`;
+    
+    if (confirm(message)) {
       await deletePhotos(Array.from(selectedIds));
     }
   };
@@ -190,32 +210,51 @@ export function Toolbar() {
         <div className="flex items-center gap-2">
           <span className="text-sm text-surface-400">
             {selectedIds.size} selected
+            <span className="ml-1 text-surface-500">
+              ({formatBytes(selectedTotalSize)})
+            </span>
           </span>
           <button
             onClick={() => deselectAll()}
-            className="text-sm text-surface-400 hover:text-surface-200"
+            disabled={isDeleting}
+            className={clsx(
+              "text-sm",
+              isDeleting 
+                ? "cursor-not-allowed text-surface-600" 
+                : "text-surface-400 hover:text-surface-200"
+            )}
           >
             Clear
           </button>
           <div className="h-4 w-px bg-surface-700" />
           <button
             onClick={handleDelete}
-            className="flex items-center gap-1 rounded-md bg-red-600/20 px-2 py-1 text-sm text-red-400 hover:bg-red-600/30"
+            disabled={isDeleting}
+            className={clsx(
+              "flex items-center gap-1 rounded-md px-2 py-1 text-sm",
+              isDeleting
+                ? "cursor-not-allowed bg-red-600/10 text-red-600"
+                : "bg-red-600/20 text-red-400 hover:bg-red-600/30"
+            )}
           >
-            <svg
-              className="h-4 w-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-              />
-            </svg>
-            Delete
+            {isDeleting ? (
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-red-500 border-t-transparent" />
+            ) : (
+              <svg
+                className="h-4 w-4"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                />
+              </svg>
+            )}
+            {isDeleting ? 'Deleting...' : 'Delete'}
           </button>
         </div>
       )}

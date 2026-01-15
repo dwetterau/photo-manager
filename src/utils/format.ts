@@ -1,5 +1,21 @@
 import { format } from 'date-fns';
 
+// Path prefixes to shorten for display
+export const PATH_SHORTCUTS: [string, string][] = [
+  ['/Users/davidw/Library/CloudStorage/Dropbox/', '/Dropbox/'],
+  ['/Users/davidw/Desktop/', '/Desktop/'],
+];
+
+// Shorten a path for display
+export function shortenPath(path: string): string {
+  for (const [prefix, replacement] of PATH_SHORTCUTS) {
+    if (path.startsWith(prefix)) {
+      return replacement + path.slice(prefix.length);
+    }
+  }
+  return path;
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
 
