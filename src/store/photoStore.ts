@@ -113,6 +113,7 @@ interface PhotoState {
   clearDeleteResult: () => void;
 
   selectPhoto: (id: string, multi?: boolean) => void;
+  selectMultiple: (ids: string[]) => void;
   selectAll: () => void;
   deselectAll: () => void;
   toggleSelection: (id: string) => void;
@@ -318,6 +319,12 @@ export const usePhotoStore = create<PhotoState>((set, get) => ({
       newSelected.add(id);
       return { selectedIds: newSelected };
     });
+  },
+
+  selectMultiple: (ids) => {
+    set(() => ({
+      selectedIds: new Set(ids),
+    }));
   },
 
   selectAll: () => {

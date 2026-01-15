@@ -4,9 +4,11 @@ import clsx from 'clsx';
 
 interface PhotoCardProps {
   photo: PhotoFile;
+  /** In duplicate mode, click selects by default instead of revealing in finder */
+  duplicateMode?: boolean;
 }
 
-export function PhotoCard({ photo }: PhotoCardProps) {
+export function PhotoCard({ photo, duplicateMode = false }: PhotoCardProps) {
   const { selectedIds, toggleSelection, revealInFinder } = usePhotoStore();
   const isSelected = selectedIds.has(photo.id);
 
@@ -16,7 +18,10 @@ export function PhotoCard({ photo }: PhotoCardProps) {
     : null;
 
   const handleClick = (e: React.MouseEvent) => {
-    if (e.metaKey || e.ctrlKey) {
+    if (duplicateMode) {
+      // In duplicate mode: click always selects
+      toggleSelection(photo.id);
+    } else if (e.metaKey || e.ctrlKey) {
       // Cmd+click toggles selection
       toggleSelection(photo.id);
     } else {
@@ -127,8 +132,22 @@ export function PhotoCard({ photo }: PhotoCardProps) {
         <p className="truncate text-xs text-surface-300">{photo.directory}</p>
       </div>
 
-      {/* Extension badge */}
-      <div className="absolute bottom-2 right-2">
+      {/* Extension badge and Finder button */}
+      <div className="absolute bottom-2 right-2 flex items-center gap-1">
+        {duplicateMode && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              revealInFinder(photo.path);
+            }}
+            className="rounded bg-black/50 p-1 text-surface-300 backdrop-blur-sm transition-colors hover:bg-black/70 hover:text-white"
+            title="Reveal in Finder"
+          >
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+            </svg>
+          </button>
+        )}
         <span className="rounded bg-black/50 px-1.5 py-0.5 font-mono text-xs uppercase text-surface-300 backdrop-blur-sm">
           {photo.extension}
         </span>

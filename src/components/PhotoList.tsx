@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { usePhotoStore } from '../store/photoStore';
 import { useSortedPhotos, useDuplicateGroups } from '../hooks/useSortedPhotos';
 import { formatBytes, formatDate, shortenPath } from '../utils/format';
+import { getSmartSelections, getFullySelectedGroups } from '../utils/smartSelect';
 import { convertFileSrc } from '@tauri-apps/api/tauri';
 import clsx from 'clsx';
 
@@ -13,7 +14,7 @@ const LOAD_MORE_INCREMENT = 100;
 const RAW_EXTENSIONS = ['arw', 'cr2', 'cr3', 'nef', 'dng', 'raf', 'orf', 'rw2', 'pef'];
 
 export function PhotoList() {
-  const { loading, photos, selectedIds, toggleSelection, filterMode, scanProgress, revealInFinder } =
+  const { loading, photos, selectedIds, toggleSelection, selectMultiple, filterMode, scanProgress, revealInFinder } =
     usePhotoStore();
   const sortedPhotos = useSortedPhotos();
   const duplicateGroups = useDuplicateGroups();
@@ -91,30 +92,115 @@ export function PhotoList() {
     const visibleGroups = duplicateGroups.slice(0, visibleCount);
     const hasMore = duplicateGroups.length > visibleCount;
 
+    const totalDuplicateSize = duplicateGroups.reduce(
+      (acc, g) => acc + g.duplicates.reduce((a, d) => a + d.size, 0),
+      0
+    );
+
+    // Compute smart selections (only for visible groups)
+    const smartSelections = getSmartSelections(visibleGroups);
+    const smartSelectCount = smartSelections.size;
+    
+    // Check for groups with all photos selected (error state)
+    const fullySelectedCount = getFullySelectedGroups(visibleGroups, selectedIds);
+    
+    const handleSmartSelect = () => {
+      selectMultiple(Array.from(smartSelections));
+    };
+
     return (
       <div className="overflow-x-auto p-4">
+        {/* Summary header */}
+        <div className="mb-4 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
+          <div className="flex items-center gap-3">
+            <div className="text-yellow-500">
+              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                />
+              </svg>
+            </div>
+            <div className="flex-1">
+              <p className="font-medium text-yellow-100">
+                {duplicateGroups.length} duplicate group{duplicateGroups.length !== 1 ? 's' : ''} found
+              </p>
+              <p className="text-sm text-yellow-300/80">
+                {duplicateGroups.reduce((acc, g) => acc + g.duplicates.length, 0)} duplicate files
+                using {formatBytes(totalDuplicateSize)} of space
+              </p>
+            </div>
+            {smartSelectCount > 0 && (
+              <button
+                onClick={handleSmartSelect}
+                className="flex items-center gap-1.5 rounded-md bg-accent/20 px-3 py-1.5 text-sm font-medium text-accent transition-colors hover:bg-accent/30"
+                title="Auto-select non-Camera Uploads photos that have copies in Camera Uploads"
+              >
+                <span>🪄</span>
+                <span>Smart Select</span>
+                <span className="rounded-full bg-accent/30 px-1.5 py-0.5 text-xs">
+                  {smartSelectCount}
+                </span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Error: all photos in a group selected */}
+        {fullySelectedCount > 0 && (
+          <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 p-4">
+            <div className="flex items-center gap-3">
+              <div className="text-red-500">
+                <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+              </div>
+              <div>
+                <p className="font-medium text-red-100">
+                  {fullySelectedCount} group{fullySelectedCount !== 1 ? 's have' : ' has'} all copies selected
+                </p>
+                <p className="text-sm text-red-300/80">
+                  Deselect at least one photo from each group to keep a copy
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         <p className="mb-4 text-xs text-surface-500">
-          Click checkbox/thumbnail to select • Click path to reveal in Finder
+          Click row to select for deletion
         </p>
         
-        {visibleGroups.map((group) => (
-          <div key={group.originalId} className="mb-6 rounded-lg border border-surface-700 bg-surface-800/30">
-            {/* Group header: Original file */}
-            <div
-              className={clsx(
-                'border-b border-surface-700 bg-surface-800/50 py-3 pr-4 transition-colors',
-                selectedIds.has(group.original.id) && 'bg-accent/20'
-              )}
-            >
-              <div className="flex items-center gap-3">
-                {/* Checkbox - click this area to select */}
-                <div
-                  className="flex h-12 cursor-pointer items-center px-3"
-                  onClick={() => toggleSelection(group.original.id)}
-                >
+        {visibleGroups.map((group) => {
+          const isOriginalSelected = selectedIds.has(group.original.id);
+          const originalThumbnailSrc = group.original.thumbnailPath && !isRawThumbnail(group.original.thumbnailPath)
+            ? convertFileSrc(group.original.thumbnailPath)
+            : null;
+
+          return (
+            <div key={group.originalId} className="mb-6 rounded-lg border border-surface-700 bg-surface-800/30">
+              {/* Group header: Original file - styled same as duplicate rows */}
+              <div
+                className={clsx(
+                  'flex cursor-pointer items-center gap-2 border-b border-surface-700 py-2 pr-3 transition-colors',
+                  isOriginalSelected
+                    ? 'bg-accent/20 hover:bg-accent/30'
+                    : 'bg-surface-800/50 hover:bg-surface-700/50'
+                )}
+                onClick={() => toggleSelection(group.original.id)}
+              >
+                {/* Checkbox */}
+                <div className="px-3">
                   <input
                     type="checkbox"
-                    checked={selectedIds.has(group.original.id)}
+                    checked={isOriginalSelected}
                     onChange={() => toggleSelection(group.original.id)}
                     onClick={(e) => e.stopPropagation()}
                     className="h-4 w-4 rounded border-surface-600 bg-surface-800 text-accent focus:ring-accent"
@@ -122,10 +208,10 @@ export function PhotoList() {
                 </div>
 
                 {/* Thumbnail */}
-                <div className="h-12 w-12 flex-shrink-0 overflow-hidden rounded bg-surface-800">
-                  {group.original.thumbnailPath && !isRawThumbnail(group.original.thumbnailPath) ? (
+                <div className="h-10 w-10 shrink-0 overflow-hidden rounded bg-surface-800">
+                  {originalThumbnailSrc ? (
                     <img
-                      src={convertFileSrc(group.original.thumbnailPath)}
+                      src={originalThumbnailSrc}
                       alt=""
                       className="h-full w-full object-cover"
                       loading="lazy"
@@ -138,33 +224,39 @@ export function PhotoList() {
                     </div>
                   )}
                 </div>
-                
-                {/* Header info - click to reveal */}
-                <div
-                  className="min-w-0 flex-1 cursor-pointer"
-                  onClick={() => revealInFinder(group.original.path)}
-                >
-                  <p className="font-medium text-surface-200">
-                    {group.original.name}
-                  </p>
-                  <p
-                    className="break-all font-mono text-xs text-surface-400 hover:text-accent"
-                  >
-                    {shortenPath(group.original.path)}
-                  </p>
-                </div>
-                
-                {/* Stats */}
-                <div className="text-right text-sm text-surface-400">
-                  <p>{formatBytes(group.original.size)}</p>
-                  <p className="text-xs">{group.duplicates.length} duplicate{group.duplicates.length !== 1 ? 's' : ''}</p>
-                </div>
-              </div>
-            </div>
 
-            {/* Duplicate rows */}
-            <table className="w-full text-left text-sm">
-              <tbody className="divide-y divide-surface-800">
+                {/* Path */}
+                <div className="min-w-0 flex-1">
+                  <span className="block truncate font-mono text-sm text-surface-300">
+                    {group.original.isCloudPlaceholder && (
+                      <span className="mr-1.5 text-sky-400" title="Cloud placeholder">☁️</span>
+                    )}
+                    {shortenPath(group.original.path)}
+                  </span>
+                </div>
+
+                {/* Size & Date */}
+                <div className="shrink-0 text-right text-xs tabular-nums text-surface-500">
+                  {formatBytes(group.original.size)} · {formatDate(group.original.modifiedAt)}
+                </div>
+
+                {/* Finder button */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    revealInFinder(group.original.path);
+                  }}
+                  className="shrink-0 rounded p-1.5 text-surface-500 transition-colors hover:bg-surface-600 hover:text-surface-200"
+                  title="Reveal in Finder"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Duplicate rows */}
+              <div className="divide-y divide-surface-800">
                 {group.duplicates.map((dup) => {
                   const isSelected = selectedIds.has(dup.id);
                   const thumbnailSrc = dup.thumbnailPath && !isRawThumbnail(dup.thumbnailPath)
@@ -172,20 +264,18 @@ export function PhotoList() {
                     : null;
 
                   return (
-                    <tr
+                    <div
                       key={dup.id}
                       className={clsx(
-                        'transition-colors',
+                        'flex cursor-pointer items-center gap-2 py-2 pr-3 transition-colors',
                         isSelected
                           ? 'bg-accent/20 hover:bg-accent/30'
                           : 'hover:bg-surface-800/50'
                       )}
+                      onClick={() => toggleSelection(dup.id)}
                     >
-                      {/* Checkbox - click to select */}
-                      <td
-                        className="cursor-pointer px-3 py-2"
-                        onClick={() => toggleSelection(dup.id)}
-                      >
+                      {/* Checkbox */}
+                      <div className="px-3">
                         <input
                           type="checkbox"
                           checked={isSelected}
@@ -193,68 +283,61 @@ export function PhotoList() {
                           onClick={(e) => e.stopPropagation()}
                           className="h-4 w-4 rounded border-surface-600 bg-surface-800 text-accent focus:ring-accent"
                         />
-                      </td>
+                      </div>
 
-                      {/* Thumbnail - click to select */}
-                      <td
-                        className="cursor-pointer px-3 py-2"
-                        onClick={() => toggleSelection(dup.id)}
-                      >
-                        <div className="h-10 w-10 overflow-hidden rounded bg-surface-800">
-                          {thumbnailSrc ? (
-                            <img
-                              src={thumbnailSrc}
-                              alt=""
-                              className="h-full w-full object-cover"
-                              loading="lazy"
-                            />
-                          ) : (
-                            <div className="flex h-full w-full items-center justify-center text-surface-600">
-                              <span className="text-[8px] font-bold uppercase">
-                                {dup.extension}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </td>
+                      {/* Thumbnail */}
+                      <div className="h-10 w-10 shrink-0 overflow-hidden rounded bg-surface-800">
+                        {thumbnailSrc ? (
+                          <img
+                            src={thumbnailSrc}
+                            alt=""
+                            className="h-full w-full object-cover"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-surface-600">
+                            <span className="text-[8px] font-bold uppercase">
+                              {dup.extension}
+                            </span>
+                          </div>
+                        )}
+                      </div>
 
-                      {/* Full Path - click to reveal */}
-                      <td
-                        className="cursor-pointer px-3 py-2"
-                        onClick={() => revealInFinder(dup.path)}
-                      >
-                        <span
-                          className="block break-all font-mono text-sm text-surface-300 hover:text-accent"
-                        >
+                      {/* Path */}
+                      <div className="min-w-0 flex-1">
+                        <span className="block truncate font-mono text-sm text-surface-300">
                           {dup.isCloudPlaceholder && (
                             <span className="mr-1.5 text-sky-400" title="Cloud placeholder">☁️</span>
                           )}
                           {shortenPath(dup.path)}
                         </span>
-                      </td>
+                      </div>
 
-                      {/* Size - click to reveal */}
-                      <td
-                        className="cursor-pointer px-3 py-2 tabular-nums text-surface-400"
-                        onClick={() => revealInFinder(dup.path)}
-                      >
-                        {formatBytes(dup.size)}
-                      </td>
+                      {/* Size & Date combined */}
+                      <div className="shrink-0 text-right text-xs tabular-nums text-surface-500">
+                        {formatBytes(dup.size)} · {formatDate(dup.modifiedAt)}
+                      </div>
 
-                      {/* Modified - click to reveal */}
-                      <td
-                        className="cursor-pointer px-3 py-2 text-surface-400"
-                        onClick={() => revealInFinder(dup.path)}
+                      {/* Finder button */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          revealInFinder(dup.path);
+                        }}
+                        className="shrink-0 rounded p-1.5 text-surface-500 transition-colors hover:bg-surface-600 hover:text-surface-200"
+                        title="Reveal in Finder"
                       >
-                        {formatDate(dup.modifiedAt)}
-                      </td>
-                    </tr>
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                      </button>
+                    </div>
                   );
                 })}
-              </tbody>
-            </table>
-          </div>
-        ))}
+              </div>
+            </div>
+          );
+        })}
 
         {hasMore && (
           <div className="mt-4 text-center">

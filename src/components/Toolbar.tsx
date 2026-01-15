@@ -108,63 +108,22 @@ export function Toolbar() {
         </button>
       </div>
 
-      {/* Filter toggle */}
-      <div className="flex rounded-md border border-surface-700 bg-surface-800">
-        <button
-          onClick={() => setFilterMode('duplicates')}
+      {/* Filter dropdown */}
+      <div className="flex items-center gap-2">
+        <label className="text-sm text-surface-500">Show:</label>
+        <select
+          value={filterMode}
+          onChange={(e) => setFilterMode(e.target.value as 'all' | 'duplicates')}
           className={clsx(
-            'flex items-center gap-1.5 rounded-l-md px-3 py-1.5 text-sm transition-colors',
-            filterMode === 'duplicates'
-              ? 'bg-yellow-600 text-white'
-              : 'text-surface-400 hover:text-surface-200'
+            "rounded-md border border-surface-700 bg-surface-800 px-2 py-1 text-sm focus:border-accent focus:outline-none",
+            filterMode === 'duplicates' ? "text-yellow-400" : "text-surface-200"
           )}
-          title="Show only duplicates"
         >
-          <svg
-            className="h-4 w-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-            />
-          </svg>
-          Duplicates
-          {duplicateCount > 0 && (
-            <span className="rounded bg-yellow-700/50 px-1.5 py-0.5 text-xs">
-              {duplicateCount}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => setFilterMode('all')}
-          className={clsx(
-            'flex items-center gap-1.5 rounded-r-md px-3 py-1.5 text-sm transition-colors',
-            filterMode === 'all'
-              ? 'bg-accent text-white'
-              : 'text-surface-400 hover:text-surface-200'
-          )}
-          title="Show all photos"
-        >
-          <svg
-            className="h-4 w-4"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"
-            />
-          </svg>
-          All
-        </button>
+          <option value="all">All Photos</option>
+          <option value="duplicates">
+            Duplicates{duplicateCount > 0 ? ` (${duplicateCount})` : ''}
+          </option>
+        </select>
       </div>
 
       {/* Sort controls */}
@@ -182,7 +141,7 @@ export function Toolbar() {
         </select>
         <button
           onClick={toggleSortOrder}
-          className="rounded-md border border-surface-700 bg-surface-800 p-1.5 text-surface-400 hover:text-surface-200"
+          className="rounded-md border border-surface-700 bg-surface-800 p-1 text-surface-400 hover:text-surface-200"
           title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
         >
           <svg
@@ -208,17 +167,14 @@ export function Toolbar() {
       {/* Selection actions */}
       {hasSelection && (
         <div className="flex items-center gap-2">
-          <span className="text-sm text-surface-400">
-            {selectedIds.size} selected
-            <span className="ml-1 text-surface-500">
-              ({formatBytes(selectedTotalSize)})
-            </span>
+          <span className="whitespace-nowrap text-sm text-surface-400">
+            {selectedIds.size} sel · {formatBytes(selectedTotalSize)}
           </span>
           <button
             onClick={() => deselectAll()}
             disabled={isDeleting}
             className={clsx(
-              "text-sm",
+              "whitespace-nowrap text-sm",
               isDeleting 
                 ? "cursor-not-allowed text-surface-600" 
                 : "text-surface-400 hover:text-surface-200"
@@ -226,12 +182,11 @@ export function Toolbar() {
           >
             Clear
           </button>
-          <div className="h-4 w-px bg-surface-700" />
           <button
             onClick={handleDelete}
             disabled={isDeleting}
             className={clsx(
-              "flex items-center gap-1 rounded-md px-2 py-1 text-sm",
+              "flex items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-sm",
               isDeleting
                 ? "cursor-not-allowed bg-red-600/10 text-red-600"
                 : "bg-red-600/20 text-red-400 hover:bg-red-600/30"
@@ -254,7 +209,7 @@ export function Toolbar() {
                 />
               </svg>
             )}
-            {isDeleting ? 'Deleting...' : 'Delete'}
+            {isDeleting ? 'Deleting...' : 'Trash'}
           </button>
         </div>
       )}
